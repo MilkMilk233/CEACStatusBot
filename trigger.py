@@ -4,7 +4,7 @@ import subprocess
 
 from dotenv import load_dotenv
 
-from CEACStatusBot import EmailNotificationHandle, NotificationManager
+from CEACStatusBot import NotificationManager, SendgridNotificationHandle, SmtpNotificationHandle
 
 if os.path.exists(".env"):
     load_dotenv(dotenv_path=".env")
@@ -43,14 +43,28 @@ try:
 except KeyError as e:
     raise RuntimeError(f"Missing required env var: {e}") from e
 
+# --- SendGrid ---
 FROM = os.getenv("FROM")
 TO = os.getenv("TO")
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 
 if FROM and TO and SENDGRID_API_KEY:
-    emailHandle = EmailNotificationHandle(FROM, TO, SENDGRID_API_KEY)
-    notificationManager.addHandle(emailHandle)
+    notificationManager.addHandle(SendgridNotificationHandle(FROM, TO, SENDGRID_API_KEY))
 else:
-    print("Email notification config missing or incomplete")
+    print("SendGrid config missing or incomplete — skipped.")
+
+# --- SMTP (e.g. QQ mail) ---
+SMTP_FROM = os.getenv("SMTP_FROM")
+SMTP_TO = os.getenv("SMTP_TO")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SMTP_SERVER = os.getenv("SMTP_SERVER", "")
+
+if SMTP_FROM and SMTP_TO and SMTP_PASSWORD:
+    notificationManager.addHandle(SmtpNotificationHandle(SMTP_FROM, SMTP_TO, SMTP_PASSWORD, SMTP_SERVER))
+else:
+    print("SMTP config missing or incomplete — skipped.")
+
+if not notificationManager.hasHandles():
+    raise RuntimeError("No notification handles configured. Set up SendGrid or SMTP.")
 
 notificationManager.send()

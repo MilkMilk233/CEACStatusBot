@@ -11,6 +11,24 @@ from .handle import NotificationHandle
 
 DEFAULT_ACTIVE_HOURS = "00:00-23:59"
 
+# CEAC "Refused" is overloaded: since March 2020 it covers both temporary
+# 221(g) administrative processing holds and final denials.  We classify by
+# whether the description text mentions "administrative processing".
+_AP_KEYWORDS = [
+    "administrative processing",
+    "undergoing such processing",
+    "will remain refused while undergoing",
+]
+
+
+def _classify_refused(description: str) -> str:
+    """Return 'Refused (AP)' or 'Refused (Final)' based on description text."""
+    lower = description.lower()
+    for kw in _AP_KEYWORDS:
+        if kw in lower:
+            return "Refused (AP)"
+    return "Refused (Final)"
+
 
 class NotificationManager:
     def __init__(
@@ -41,6 +59,9 @@ class NotificationManager:
     def addHandle(self, notificationHandle: NotificationHandle) -> None:
         self.__handleList.append(notificationHandle)
 
+    def hasHandles(self) -> bool:
+        return len(self.__handleList) > 0
+
     def send(self) -> None:
         res = query_status(
             self.__location,
@@ -52,7 +73,14 @@ class NotificationManager:
         if not res["success"]:
             raise RuntimeError("Query status failed, no notification sent.")
 
-        current_status = res["status"]
+        raw_status = res["status"]
+        description = res.get("description", "")
+
+        if raw_status == "Refused":
+            current_status = _classify_refused(description)
+        else:
+            current_status = raw_status
+
         print(f"Current status: {current_status} - Last updated: {res['case_last_updated']}")
 
         record = self.__load_record()
@@ -92,7 +120,8 @@ class NotificationManager:
             json.dump(record, file, indent=2)
 
     def __send_notifications(self, res: dict, from_status: str, to_status: str, history: list) -> None:
-        if to_status == "Refused" and not self.__is_within_active_hours():
+        # Active-hours gating: both Refused variants are suppressed outside active hours.
+        if to_status in ("Refused (AP)", "Refused (Final)") and not self.__is_within_active_hours():
             print(
                 f"Outside active hours {os.getenv('ACTIVE_HOURS', DEFAULT_ACTIVE_HOURS)}. "
                 "No notification sent for Refused status."

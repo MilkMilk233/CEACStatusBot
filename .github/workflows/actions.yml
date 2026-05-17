@@ -49,6 +49,10 @@ jobs:
           FROM: ${{ secrets.FROM }}
           TO: ${{ secrets.TO }}
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          SMTP_TO: ${{ secrets.SMTP_TO }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: uv run trigger.py
 
