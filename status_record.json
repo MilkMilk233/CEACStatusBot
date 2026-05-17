@@ -1,5 +1,12 @@
 {
-  "current": "UNKNOWN",
-  "last_updated": "",
-  "history": []
+  "current": "Refused (AP)",
+  "last_updated": "15-May-2026",
+  "history": [
+    {
+      "type": "status",
+      "from": "UNKNOWN",
+      "to": "Refused (AP)",
+      "at": "2026-05-17T23:13:22.612544"
+    }
+  ]
 }
