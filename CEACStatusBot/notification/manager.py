@@ -48,7 +48,7 @@ class NotificationManager:
         self.__status_file = "status_record.json"
 
     def _get_hour_range(self):
-        active_hours = os.getenv("ACTIVE_HOURS", DEFAULT_ACTIVE_HOURS)
+        active_hours = os.getenv("ACTIVE_HOURS") or DEFAULT_ACTIVE_HOURS
         start_str, end_str = active_hours.split("-")
         start = datetime.datetime.strptime(start_str, "%H:%M").time()
         end = datetime.datetime.strptime(end_str, "%H:%M").time()
