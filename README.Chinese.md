@@ -1,100 +1,320 @@
-# CEACStatusBot🤖
+# CEACStatusBot
 
-自动从[CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV)查询您的美国签证申请状态，并在状态更新时立即通知您！
+自动从 [CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV) 查询您的美国签证申请状态，**仅在状态变化时**才发送通知 — 不轰炸，不泄露个人信息。
 
-感谢 [Andision](https://github.com/Andision)的 [CEACStatusBot](https://github.com/Andision/CEACStatusBot), 这个分支更新了当前的依赖并重构了代码，以便在状态发生变化时通知用户。
+## 目录
 
-## 使用
+- [工作原理](#工作原理)
+- [快速开始 (GitHub Actions)](#快速开始-github-actions)
+- [本地使用](#本地使用)
+- [环境变量](#环境变量)
+- [邮件通知 (SendGrid)](#邮件通知-sendgrid)
+- [状态记录与状态机](#状态记录与状态机)
+- [常见问题](#常见问题)
+- [致谢](#致谢)
 
+---
 
-您可以将其部署到您自己的机器上，但强烈建议使用Github Actions。
+## 工作原理
 
+### 架构图
 
-###  环境变量
+```
+┌─────────────────────────────────────────────────┐
+│                  GitHub Actions                  │
+│  ┌──────────┐    ┌──────────┐    ┌───────────┐  │
+│  │  定时任务 │───▶│  查询    │───▶│  状态机   │  │
+│  │ (每小时)  │    │  CEAC    │    │           │  │
+│  └──────────┘    └────┬─────┘    └─────┬─────┘  │
+│                       │                │         │
+│                 验证码识别       status 变了? │
+│                (ONNX 模型)          │          │
+│                                  ┌───┴──────┐   │
+│                                  │ 是       │   │
+│                                  ▼          │   │
+│                           ┌──────────┐      │   │
+│                           │ SendGrid │      │   │
+│                           │   发邮件  │      │   │
+│                           └──────────┘      │   │
+│                                  │          │   │
+│                           ┌──────▼──────┐   │   │
+│                           │ git commit  │   │   │
+│                           │ & push JSON │   │   │
+│                           └─────────────┘   │   │
+│                                  │          │   │
+│                      ┌───────────▼──────┐   │   │
+│                      │ 否 (状态不变)     │   │   │
+│                      │  → 什么都不做    │   │   │
+│                      └──────────────────┘   │   │
+└─────────────────────────────────────────────────┘
+```
 
+### 执行流程
 
-- LOCATION: 您申请签证的使领馆的地点。要查找使领馆对应的名称，请参考[此表](LOCATION.md)。请直接使用使馆位置名，如`CHINA, BEIJING`。
+1. **定时触发** — GitHub Actions 每小时第 17 分钟执行一次。
 
+2. **抓取 CEAC 页面** — 程序请求 CEAC 签证状态查询页面，下载验证码图片，使用 ONNX 深度学习模型自动识别验证码，然后提交您的申请信息（从 GitHub Secrets 中注入，不写入文件），解析返回结果：状态、最后更新日期、描述等。
 
-- NUMBER: 您在CEAC网站中的Application ID or Case Number(例如`AA0020AKAX` 或 `2012118 345 0001`)。具体信息请查看[CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV)网站的说明。**注意**: 请先在[CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV)网站确认你能够正确获取你的签证状态。这一项目的目的是简化从[CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV)网站获取签证信息的过程，并不能比人工方式获得更多的信息。
+3. **状态机判断** — 将本次查询到的状态与 `status_record.json` 中记录的上一次状态对比。如果状态字符串**完全相同**，程序直接退出。不发邮件，不改文件。
 
-- PASSPORT_NUMBER: 护照号码
+4. **发送通知** — 如果状态**发生变化**，通过 SendGrid API 发送邮件。邮件内容包含：
+   - 状态转移：*"旧状态 → 新状态"*
+   - 完整的状态转移时间线（所有历史记录）
+   - CEAC 返回的描述文字和日期
 
-- SURNAME: 姓的前5个英文字母
+   **邮件中不包含护照号、申请号、姓氏等任何个人信息。**
 
-- TIMEZONE: 可选，设置你所在的时区，以避免在睡眠时间收到打扰。例如: `Asia/Shanghai` 或 `America/New_York`。**注意**: 这里使用的是IANA时区数据库的时区表示法，并不是简单的地理位置的组合。例如，如果你希望使用北京时间，你的时区应该是`Asia/Shanghai`而**不是** ~~`Asia/Beijing`~~
+5. **持久化状态** — 更新后的 `status_record.json` 由 workflow 自动提交回仓库，作为下次运行的基线。
 
-- ACTIVE_HOURS: 可选，设置接收通知的活跃时间段，以避免在睡眠时间收到打扰。使用24小时格式。例如: `08:00-22:00`
+### 邮件示例
 
-- GH_TOKEN: 要访问之前的状态，您需要设置一个具有`repo`权限的Github令牌。您可以在Github -> 设置 -> 开发者设置 -> 个人访问令牌中创建一个新的令牌。
+```
+主题: [CEACStatusBot] Application Received -> Administrative Processing
 
-#### 邮件通知
+Visa status has changed.
 
-如果你想收到邮件通知，需要设置如下环境变量：
+Previous status: Application Received
+Current status:  Administrative Processing
+Last updated:    28-May-2024
+Case created:    15-May-2024
 
-- FROM: 发送通知的电子邮件地址。**注意**: 本项目并不提供任何电子邮件服务，需要使用你提供的第三方电子邮件服务通过SMTP协议发送电子邮件，因此需要你提供用于发送通知的电子邮件地址。*一个小技巧是，如果你希望如果你希望通过邮件提醒自己签证状态，你可以在此处填写和收取通知相同的电子邮件地址，即可以使用同一个邮箱收发邮件，换句话说你可以自己给自己发邮件。*
+--- Status Timeline ---
+  UNKNOWN -> Application Received  (2024-05-15T08:00:00)
+  Application Received -> Administrative Processing  (2024-05-28T14:30:00)
 
-- TO: 接收通知的电子邮件地址。您可以发送到多个电子邮件地址，用“|”分割多个电子邮件地址(“|”这个符号通常在退格键Backspace的下方，回车Enter的上方，你通常需要使用上档Shift键打出这个符号)，不用且不可添加任何空格。下面是几个例子: 
-  - 发送到一个邮箱: `your_mail@email.com`
-  - 发送到多个邮箱: `first@email.com|second@email.com|third@email.com`
+--- Details ---
+Visa type:    NONIMMIGRANT VISA APPLICATION
+Description:  Your visa case is currently undergoing necessary administrative processing...
+```
 
-- PASSWORD: 在`FROM`填写的邮箱的密码。**注意**: 对于一些电子邮箱(如QQ邮箱)，你应该在这里使用“授权码”而不是邮箱的密码，因为这个项目使用SMTP协议发送电子邮件。有关详细信息，请查看邮箱服务提供商的SMTP使用方法。
+---
 
-- SMTP: 可选，设置SMTP服务器 (e.g. `smtp.example.com`, `smtp.example.com:587`)
+## 快速开始 (GitHub Actions)
 
-#### Telegram机器人通知
+### 第一步：Fork 仓库
 
-如果你想通过Telegram Bot发送通知，需要设置如下环境变量。
+点击 [github.com/machsix/CEACStatusBot](https://github.com/machsix/CEACStatusBot) 页面右上角的 **Fork** 按钮。
 
-Telegram Bot [创建教程](https://www.cytron.io/tutorial/how-to-create-a-telegram-bot-get-the-api-key-and-chat-id)
+### 第二步：注册 SendGrid
 
-- TG_BOT_TOKEN: Bot 密钥
+详见下方 [邮件通知 (SendGrid)](#邮件通知-sendgrid) 章节。你需要准备：
+- 一个已验证的发件邮箱
+- 一个 API key
 
-- TG_CHAT_ID: 聊天 ID，获取方法见教程
+### 第三步：配置 GitHub Secrets
 
-### 在 Github Actions 的使用方法
+进入你 fork 的仓库：**Settings → Secrets and variables → Actions → New repository secret**。
 
+逐一添加以下**必填** secrets：
 
-1. folk这个仓库
+| Secret | 说明 | 示例 |
+|---|---|---|
+| `LOCATION` | 使领馆地点 | `CHINA, BEIJING` |
+| `NUMBER` | Application ID 或 Case Number | `AA0020AKAX` |
+| `PASSPORT_NUMBER` | 护照号码 | `E12345678` |
+| `SURNAME` | 姓的前 5 个英文字母 | `SMITH` |
+| `FROM` | SendGrid 已验证的发件邮箱 | `noreply@example.com` |
+| `TO` | 收件邮箱，多个用 `\|` 分隔 | `you@gmail.com\|you@qq.com` |
+| `SENDGRID_API_KEY` | SendGrid API key | `SG.xxxxxxxx` |
 
+**可选** secrets：
 
-2. 在`Github -> Settings -> Secrets and variables -> Actions -> New repository secret`中设置环境变量。
-![image](docs/github.new.secret.png)
+| Secret | 说明 | 示例 |
+|---|---|---|
+| `TIMEZONE` | IANA 时区格式 | `Asia/Shanghai` |
+| `ACTIVE_HOURS` | 活跃时间段（仅对 Refused 状态生效） | `08:00-22:00` |
 
+> 有效的地点代码请参见 [LOCATION.md](LOCATION.md)。请先在 CEAC 网站手动确认能查到你的签证状态。
 
-3. 查看 `Github Actions` 中的 `workflows` 是否正常运行并检查邮箱是否收到邮件。
+### 第四步：启用 Actions
 
-### 本地使用
+进入你 fork 仓库的 **Actions** 标签页，启用 workflows（fork 仓库默认禁用）。
 
-对于本地使用，可以在项目根目录创建一个 `.env` 文件来存储你的环境变量 (例如 `LOCATION=...`, `NUMBER=...`)，脚本会自动加载它们。或者拷贝模版文件 `.env.example` 并重命名为 `.env`来使用。
-然后使用 uv 构建环境：
+### 第五步：手动触发测试
+
+进入 **Actions → run main.py → Run workflow**，点击绿色 **Run workflow** 按钮。
+
+首次运行的状态转移是 `UNKNOWN` → `<你的实际状态>`，因此你会收到一封通知邮件。之后，只有当状态实际变化时才会再次收到邮件。
+
+---
+
+## 本地使用
+
+如果你想在本地机器上运行（不使用 GitHub Actions）：
+
+### 前提条件
+
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/)（`pip install uv`）
+
+### 安装步骤
 
 ```bash
-pip install uv # 如果你没有安装 uv
+git clone https://github.com/YOUR_USERNAME/CEACStatusBot.git
+cd CEACStatusBot
+
+# 从模板创建 .env 文件
+cp .env.example .env
+# 编辑 .env 填入真实值
+nano .env
+
+# 安装依赖
 uv sync
+
+# 运行一次
 uv run trigger.py
 ```
 
+想定时运行？用 cron：
 
-## 待办事项
+```bash
+# crontab：每小时第 17 分钟执行一次
+17 * * * * cd /path/to/CEACStatusBot && /path/to/uv run trigger.py
+```
 
-- [x] 向多个邮箱发送邮件。
+---
 
-- [x] 增加更多第三方通知服务。
+## 环境变量
 
-- [ ] 更人性化的界面。
+### 必填
 
+| 变量 | 说明 |
+|---|---|
+| `LOCATION` | 申请签证的使领馆。详见 [LOCATION.md](LOCATION.md)。 |
+| `NUMBER` | CEAC 网站的 Application ID 或 Case Number。 |
+| `PASSPORT_NUMBER` | 护照号码，需与 CEAC 表格中填写的一致。 |
+| `SURNAME` | 姓的前 5 个英文字母，需与 CEAC 表格中填写的一致。 |
 
-## 特别感谢
+### 通知（发邮件必填）
+
+| 变量 | 说明 |
+|---|---|
+| `FROM` | SendGrid 已验证的发件邮箱。 |
+| `TO` | 收件邮箱。多个用 `\|` 分隔：`a@x.com\|b@x.com` |
+| `SENDGRID_API_KEY` | SendGrid API key，需有 "Mail Send" 权限。 |
+
+### 时间设置（可选）
+
+| 变量 | 说明 |
+|---|---|
+| `TIMEZONE` | IANA 时区格式，如 `Asia/Shanghai`、`America/New_York`。用于判断是否在活跃时间段内。注意：北京时间应写 `Asia/Shanghai`，而非 ~~`Asia/Beijing`~~。 |
+| `ACTIVE_HOURS` | 接收 "Refused" 状态通知的时间窗口，24 小时格式。示例：`08:00-22:00`。默认值：`00:00-23:59`（全天）。 |
+
+---
+
+## 邮件通知 (SendGrid)
+
+### 为什么用 SendGrid？
+
+- **免费**：100 封/天，远超实际需要。
+- **Token 而非密码**：API key 只有发邮件的能力。即使泄露，你可以在 SendGrid 后台撤销并新建一个。它无法登录你的个人邮箱。
+- **无个人数据**：邮件内容只有状态名称和日期。即使 SendGrid 的服务器被攻击，你的护照号和申请号也不在邮件中。
+
+### 设置步骤（约 5 分钟）
+
+1. 访问 [sendgrid.com](https://sendgrid.com)，点击 **Start for Free** 注册。
+2. 验证邮箱：**Settings → Sender Authentication → Verify a Single Sender**。输入一个你拥有的邮箱地址，去收件箱点击验证链接。
+3. 创建 API key：**Settings → API Keys → Create API Key**。选择 "Restricted Access"，仅开启 **Mail Send** 权限。复制 key（以 `SG.` 开头）。
+4. 将以下信息添加到 GitHub Secrets（或本地 `.env` 文件）：
+   - `FROM`：你在第 2 步验证的邮箱
+   - `TO`：收件邮箱
+   - `SENDGRID_API_KEY`：第 3 步创建的 key
+
+### 多个收件人
+
+用 `|` 分隔多个邮箱地址（不要加空格）：
+
+```
+you@gmail.com|you@qq.com|partner@outlook.com
+```
+
+每个收件人独立发送一封邮件。不使用 CC/BCC。
+
+---
+
+## 状态记录与状态机
+
+### 文件格式
+
+`status_record.json` 是 Bot 的「记忆」。它存储在仓库中，**不含任何个人信息** — 只有状态名称和 ISO-8601 时间戳。
+
+```json
+{
+  "current": "Issued",
+  "history": [
+    {"from": "UNKNOWN", "to": "Application Received", "at": "2024-05-15T08:00:00"},
+    {"from": "Application Received", "to": "Administrative Processing", "at": "2024-05-28T14:30:00"},
+    {"from": "Administrative Processing", "to": "Issued", "at": "2024-06-15T10:00:00"}
+  ]
+}
+```
+
+### 通知规则
+
+| 情况 | 行为 |
+|---|---|
+| 状态**变化**（如 `UNKNOWN` → `Application Received`） | 记录转移，发送邮件 |
+| 状态**不变**（如 `Issued` → `Issued`） | **静默**——不发邮件，不改文件 |
+| 状态变为 `Refused` 且在活跃时间 | 发送邮件 |
+| 状态变为 `Refused` 且不在活跃时间 | 记录转移，**不发送**邮件 |
+
+注意：`case_last_updated` 日期变化**不会**触发通知。只有 status 字符串本身的变化才触发。
+
+### Refused 状态的活跃时间
+
+签证被拒（Refused）的原因之一是行政审查（Administrative Processing 有时也会显示为 Refused）。如果你不希望半夜被通知吵醒，可以设置 `TIMEZONE` 和 `ACTIVE_HOURS`：
+
+```
+TIMEZONE=Asia/Shanghai
+ACTIVE_HOURS=08:00-22:00
+```
+
+这样，凌晨 3 点的 Refused 通知不会发送，但仍会记录到 `status_record.json` 中。其他状态（如 Issued）不受此限制，随时发送。
+
+---
+
+## 常见问题
+
+### "Query status failed, no notification sent"
+
+程序在重试 5 次后仍未能从 CEAC 获取状态。可能原因：
+- CEAC 网站暂时不可用（稍后重试即可）。
+- `LOCATION` 值与 CEAC 下拉菜单中的选项不匹配。请检查 [LOCATION.md](LOCATION.md)，确保名称完全一致。
+
+### "Email notification config missing or incomplete"
+
+`FROM`、`TO` 或 `SENDGRID_API_KEY` 有缺失。如果使用 GitHub Actions，检查 repository secrets。如果本地运行，检查 `.env` 文件。
+
+### 运行成功但没收到邮件
+
+- 检查垃圾邮件/垃圾箱。
+- 登录 SendGrid 后台，进入 **Activity → Search**。查找邮件状态——会显示 "Delivered"（已送达）、"Bounced"（退信）或 "Dropped"（丢弃），并附原因。
+- 确认你的发件邮箱在 SendGrid 已验证（**Settings → Sender Authentication**）。
+- QQ 邮箱用户：SendGrid 从境外 IP 发送的邮件偶尔会被 QQ 邮箱归入垃圾邮件。将发件人标记为「这不是垃圾邮件」来训练过滤规则。
+
+### Workflow 不运行
+
+- Fork 仓库的 Actions 默认禁用。进入 **Actions** 标签页，点击启用。
+- 定时任务（`17 * * * *`）仅在**默认分支**（`main`）上触发。如果在其他分支上开发，请使用 `workflow_dispatch` 手动触发。
+
+### Actions 中 git push 失败
+
+Workflow 需要 `contents: write` 权限（已在 workflow 文件中配置）。如果你在 `main` 分支上设置了需要 PR review 的分支保护规则，`github-actions[bot]` 的推送会被阻止。解决方法：在分支保护规则中放行 `github-actions[bot]`，或移除分支保护。
+
+### 我 fork 的仓库是 public 的，安全吗？
+
+安全。你的个人信息（护照号、申请号、姓氏）仅存储在 GitHub **Secrets** 中，程序运行时注入内存，永远不会写入文件或提交到仓库。`status_record.json` 中只包含签证状态名称和时间戳，不含任何个人数据。
+
+---
+
+## 致谢
 
 ### 开发者
 
-[h4x3rotab](https://github.com/h4x3rotab) : Telegram bot, 适配新版CEAC接口
+- [h4x3rotab](https://github.com/h4x3rotab): Telegram bot 集成，适配新版 CEAC 接口
+- [Andision](https://github.com/Andision): 原始项目
 
 ### 相关项目
 
-这个repo中的部分代码引用了下面的项目。谢谢你们的工作。
-
 - [ceac_tracker](https://github.com/lixin-wei/ceac_tracker)
-
 - [CEACStatTracker](https://github.com/yuzeming/CEACStatTracker)

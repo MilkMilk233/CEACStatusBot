@@ -6,11 +6,13 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    - cron: '17 * * * *' # At 00:00 on Monday
+    - cron: '17 * * * *'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repo content
         uses: actions/checkout@v2
@@ -43,13 +45,10 @@ jobs:
           PASSPORT_NUMBER: ${{ secrets.PASSPORT_NUMBER }}
           SURNAME: ${{ secrets.SURNAME }}
           TIMEZONE: ${{ secrets.TIMEZONE }}
+          ACTIVE_HOURS: ${{ secrets.ACTIVE_HOURS }}
           FROM: ${{ secrets.FROM }}
           TO: ${{ secrets.TO }}
-          PASSWORD: ${{ secrets.PASSWORD }}
-          SMTP: ${{ secrets.SMTP }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: uv run trigger.py
 
@@ -58,3 +57,11 @@ jobs:
         with:
           name: status-artifact
           path: status_record.json
+
+      - name: Commit and push status record
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status_record.json
+          git diff --staged --quiet || git commit -m "Update status record"
+          git push
