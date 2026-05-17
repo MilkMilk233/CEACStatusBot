@@ -23,9 +23,7 @@ class SmtpNotificationHandle(NotificationHandle):
             self.__port = 0
 
     def send(self, notification: dict) -> None:
-        subject = "[CEACStatusBot] {} -> {}".format(
-            notification["from_status"], notification["to_status"]
-        )
+        subject = self._make_subject(notification)
         body = build_email_body(notification)
 
         msg = MIMEMultipart()
@@ -40,3 +38,13 @@ class SmtpNotificationHandle(NotificationHandle):
         smtp.quit()
         domains = [f"***@{a.split('@')[1]}" for a in self.__toEmail]
         print(f"SMTP: email sent to {len(self.__toEmail)} recipient(s) ({', '.join(domains)})")
+
+    @staticmethod
+    def _make_subject(notification: dict) -> str:
+        if notification.get("is_status_change", True):
+            return "[CEACStatusBot] {} -> {}".format(
+                notification["from_status"], notification["to_status"]
+            )
+        return "[CEACStatusBot] {} — Case updated".format(
+            notification["to_status"]
+        )

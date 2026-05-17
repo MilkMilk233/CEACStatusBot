@@ -13,9 +13,7 @@ class SendgridNotificationHandle(NotificationHandle):
         self.__api_url = "https://api.sendgrid.com/v3/mail/send"
 
     def send(self, notification: dict) -> None:
-        subject = "[CEACStatusBot] {} -> {}".format(
-            notification["from_status"], notification["to_status"]
-        )
+        subject = self._make_subject(notification)
         body = build_email_body(notification)
 
         for recipient in self.__toEmail:
@@ -36,3 +34,13 @@ class SendgridNotificationHandle(NotificationHandle):
                 print(f"SendGrid: email sent to ***@{recipient.split('@')[1]}")
             else:
                 print(f"SendGrid: failed to send to ***@{recipient.split('@')[1]}: HTTP {resp.status_code}")
+
+    @staticmethod
+    def _make_subject(notification: dict) -> str:
+        if notification.get("is_status_change", True):
+            return "[CEACStatusBot] {} -> {}".format(
+                notification["from_status"], notification["to_status"]
+            )
+        return "[CEACStatusBot] {} — Case updated".format(
+            notification["to_status"]
+        )
