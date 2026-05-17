@@ -101,7 +101,7 @@ class NotificationManager:
         if current_last_updated and current_last_updated != previous_last_updated:
             print(f"Status unchanged ({current_status}) but last_updated changed: "
                   f"{previous_last_updated} -> {current_last_updated}")
-            self.__update_last_updated(current_status, current_last_updated)
+            self.__record_case_update(current_status, previous_last_updated, current_last_updated)
             self.__send_notifications(
                 res, previous_status, current_status, record.get("history", []),
                 is_status_change=False, previous_last_updated=previous_last_updated,
@@ -130,6 +130,7 @@ class NotificationManager:
         record["current"] = to_status
         record["last_updated"] = last_updated
         record["history"].append({
+            "type": "status",
             "from": from_status,
             "to": to_status,
             "at": timestamp,
@@ -137,9 +138,17 @@ class NotificationManager:
         with open(self.__status_file, "w") as file:
             json.dump(record, file, indent=2)
 
-    def __update_last_updated(self, current_status: str, last_updated: str) -> None:
+    def __record_case_update(self, current_status: str, previous_last_updated: str, new_last_updated: str) -> None:
         record = self.__load_record()
-        record["last_updated"] = last_updated
+        timestamp = datetime.datetime.now().isoformat()
+        record["last_updated"] = new_last_updated
+        record["history"].append({
+            "type": "case_updated",
+            "status": current_status,
+            "previous_last_updated": previous_last_updated,
+            "new_last_updated": new_last_updated,
+            "at": timestamp,
+        })
         with open(self.__status_file, "w") as file:
             json.dump(record, file, indent=2)
 

@@ -32,7 +32,13 @@ def build_email_body(notification: dict) -> str:
     if notification["history"]:
         lines.append("\n--- Status Timeline ---")
         for entry in notification["history"]:
-            lines.append(f"  {entry['from']} -> {entry['to']}  ({entry['at']})")
+            if entry.get("type") == "case_updated":
+                lines.append(
+                    f"  {entry['status']} — Case updated "
+                    f"({entry['previous_last_updated']} -> {entry['new_last_updated']})  ({entry['at']})"
+                )
+            else:
+                lines.append(f"  {entry['from']} -> {entry['to']}  ({entry['at']})")
 
     lines.append("\n--- Details ---")
     lines.append(f"Visa type:    {notification['visa_type']}")
