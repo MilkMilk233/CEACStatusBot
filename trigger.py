@@ -4,15 +4,10 @@ import subprocess
 
 from dotenv import load_dotenv
 
-from CEACStatusBot import (
-    EmailNotificationHandle,
-    NotificationManager,
-    TelegramNotificationHandle,
-)
+from CEACStatusBot import NotificationManager, SendgridNotificationHandle, SmtpNotificationHandle
 
-# --- Load .env if present, else fallback to system env ---
 if os.path.exists(".env"):
-    load_dotenv(dotenv_path=".env")  # loads into os.environ
+    load_dotenv(dotenv_path=".env")
 else:
     print(".env not found, using system environment only")
 
@@ -31,15 +26,10 @@ def download_artifact():
             subprocess.run(["gh", "run", "download", "--name", "status-artifact"], check=True)
         else:
             with open("status_record.json", "w") as file:
-                json.dump({"statuses": []}, file)
+                json.dump({"current": "UNKNOWN", "history": []}, file)
     except Exception as e:
         print(f"Error downloading artifact: {e}")
 
-
-# --- Read env vars with fallback ---
-GH_TOKEN = os.getenv("GH_TOKEN")
-if not GH_TOKEN:
-    print("GH_TOKEN not found")
 
 if not os.path.exists("status_record.json"):
     download_artifact()
@@ -53,30 +43,28 @@ try:
 except KeyError as e:
     raise RuntimeError(f"Missing required env var: {e}") from e
 
-
-# --- Optional: Email notifications ---
+# --- SendGrid ---
 FROM = os.getenv("FROM")
 TO = os.getenv("TO")
-PASSWORD = os.getenv("PASSWORD")
-SMTP = os.getenv("SMTP", "")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 
-if FROM and TO and PASSWORD:
-    emailNotificationHandle = EmailNotificationHandle(FROM, TO, PASSWORD, SMTP)
-    notificationManager.addHandle(emailNotificationHandle)
+if FROM and TO and SENDGRID_API_KEY:
+    notificationManager.addHandle(SendgridNotificationHandle(FROM, TO, SENDGRID_API_KEY))
 else:
-    print("Email notification config missing or incomplete")
+    print("SendGrid config missing or incomplete — skipped.")
 
+# --- SMTP (e.g. QQ mail) ---
+SMTP_FROM = os.getenv("SMTP_FROM")
+SMTP_TO = os.getenv("SMTP_TO")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SMTP_SERVER = os.getenv("SMTP_SERVER", "")
 
-# --- Optional: Telegram notifications ---
-BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
-CHAT_ID = os.getenv("TG_CHAT_ID")
-
-if BOT_TOKEN and CHAT_ID:
-    tgNotif = TelegramNotificationHandle(BOT_TOKEN, CHAT_ID)
-    notificationManager.addHandle(tgNotif)
+if SMTP_FROM and SMTP_TO and SMTP_PASSWORD:
+    notificationManager.addHandle(SmtpNotificationHandle(SMTP_FROM, SMTP_TO, SMTP_PASSWORD, SMTP_SERVER))
 else:
-    print("Telegram bot notification config missing or incomplete")
+    print("SMTP config missing or incomplete — skipped.")
 
+if not notificationManager.hasHandles():
+    raise RuntimeError("No notification handles configured. Set up SendGrid or SMTP.")
 
-# --- Send notifications ---
 notificationManager.send()

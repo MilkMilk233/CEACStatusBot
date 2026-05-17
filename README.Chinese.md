@@ -1,100 +1,233 @@
-# CEACStatusBot🤖
+# CEACStatusBot
 
-自动从[CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV)查询您的美国签证申请状态，并在状态更新时立即通知您！
+自动从 [CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV) 查询你的美国签证申请状态，**只在状态变化时**发送邮件通知。不轰炸，不泄露个人信息，不存明文密码。
 
-感谢 [Andision](https://github.com/Andision)的 [CEACStatusBot](https://github.com/Andision/CEACStatusBot), 这个分支更新了当前的依赖并重构了代码，以便在状态发生变化时通知用户。
+---
 
-## 使用
+## 工作原理
 
+```
+┌──────────────────────────────────────────────────────────┐
+│                    GitHub Actions                         │
+│                    (每小时执行)                            │
+│                                                          │
+│  1. 抓取 CEAC → ONNX 模型识别验证码                        │
+│                        │                                 │
+│  2. 对比上次状态 (status_record.json)                     │
+│           │                          │                   │
+│         变了                       没变                   │
+│           │                          │                   │
+│  3. 记录状态转移                  什么都不做               │
+│     ↓                                                    │
+│  4. 发送邮件 ──┬── SendGrid (REST API)                   │
+│               └── SMTP     (QQ / Gmail / ...)            │
+│     ↓                                                    │
+│  5. git commit & push status_record.json                 │
+└──────────────────────────────────────────────────────────┘
+```
 
-您可以将其部署到您自己的机器上，但强烈建议使用Github Actions。
+1. **查询** — 程序请求 CEAC 签证状态页面，下载验证码，用 ONNX 深度学习模型自动识别。然后用你的申请信息（运行时从 GitHub Secrets 注入，不写入文件）提交表单，解析返回结果。
 
+2. **状态机判断** — 对比 `status_record.json` 中记录的上一次状态。如果完全一样，程序直接退出：不发邮件，不改文件。
 
-###  环境变量
+3. **区分 Refused 类型** — 2020 年 3 月起，CEAC 把最终拒签和 221(g) 行政审查都显示为 `Refused`。Bot 通过分析描述文字自动区分为 `Refused (AP)`（行政审查）和 `Refused (Final)`（最终拒签），视为两个不同状态。
 
+4. **发送通知** — 状态变化时，通过你配置的邮件方式发送。邮件内容只有旧→新状态转移 + 完整历史时间线 + CEAC 描述文字。**不包含护照号、申请号、姓氏。**
 
-- LOCATION: 您申请签证的使领馆的地点。要查找使领馆对应的名称，请参考[此表](LOCATION.md)。请直接使用使馆位置名，如`CHINA, BEIJING`。
+5. **持久化** — 更新后的 `status_record.json` 被提交回仓库，作为下次运行的基线。该文件仅含状态名称和时间戳，零个人数据。
 
+### 邮件示例
 
-- NUMBER: 您在CEAC网站中的Application ID or Case Number(例如`AA0020AKAX` 或 `2012118 345 0001`)。具体信息请查看[CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV)网站的说明。**注意**: 请先在[CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV)网站确认你能够正确获取你的签证状态。这一项目的目的是简化从[CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV)网站获取签证信息的过程，并不能比人工方式获得更多的信息。
+```
+主题: [CEACStatusBot] Application Received -> Administrative Processing
 
-- PASSPORT_NUMBER: 护照号码
+Visa status has changed.
 
-- SURNAME: 姓的前5个英文字母
+Previous status: Application Received
+Current status:  Administrative Processing
+Last updated:    28-May-2024
+Case created:    15-May-2024
 
-- TIMEZONE: 可选，设置你所在的时区，以避免在睡眠时间收到打扰。例如: `Asia/Shanghai` 或 `America/New_York`。**注意**: 这里使用的是IANA时区数据库的时区表示法，并不是简单的地理位置的组合。例如，如果你希望使用北京时间，你的时区应该是`Asia/Shanghai`而**不是** ~~`Asia/Beijing`~~
+--- Status Timeline ---
+  UNKNOWN -> Application Received  (2024-05-15T08:00:00)
+  Application Received -> Administrative Processing  (2024-05-28T14:30:00)
 
-- ACTIVE_HOURS: 可选，设置接收通知的活跃时间段，以避免在睡眠时间收到打扰。使用24小时格式。例如: `08:00-22:00`
+--- Details ---
+Visa type:    NONIMMIGRANT VISA APPLICATION
+Description:  Your visa case is currently undergoing necessary administrative processing...
+```
 
-- GH_TOKEN: 要访问之前的状态，您需要设置一个具有`repo`权限的Github令牌。您可以在Github -> 设置 -> 开发者设置 -> 个人访问令牌中创建一个新的令牌。
+---
 
-#### 邮件通知
+## 快速开始 (GitHub Actions)
 
-如果你想收到邮件通知，需要设置如下环境变量：
+### 第 1 步：Fork 仓库
 
-- FROM: 发送通知的电子邮件地址。**注意**: 本项目并不提供任何电子邮件服务，需要使用你提供的第三方电子邮件服务通过SMTP协议发送电子邮件，因此需要你提供用于发送通知的电子邮件地址。*一个小技巧是，如果你希望如果你希望通过邮件提醒自己签证状态，你可以在此处填写和收取通知相同的电子邮件地址，即可以使用同一个邮箱收发邮件，换句话说你可以自己给自己发邮件。*
+Fork [github.com/machsix/CEACStatusBot](https://github.com/machsix/CEACStatusBot)。
 
-- TO: 接收通知的电子邮件地址。您可以发送到多个电子邮件地址，用“|”分割多个电子邮件地址(“|”这个符号通常在退格键Backspace的下方，回车Enter的上方，你通常需要使用上档Shift键打出这个符号)，不用且不可添加任何空格。下面是几个例子: 
-  - 发送到一个邮箱: `your_mail@email.com`
-  - 发送到多个邮箱: `first@email.com|second@email.com|third@email.com`
+### 第 2 步：选择邮件发送方式
 
-- PASSWORD: 在`FROM`填写的邮箱的密码。**注意**: 对于一些电子邮箱(如QQ邮箱)，你应该在这里使用“授权码”而不是邮箱的密码，因为这个项目使用SMTP协议发送电子邮件。有关详细信息，请查看邮箱服务提供商的SMTP使用方法。
+至少需要配置一种。两种可以同时启用，互不影响。
 
-- SMTP: 可选，设置SMTP服务器 (e.g. `smtp.example.com`, `smtp.example.com:587`)
+| | SendGrid | SMTP（QQ 邮箱） |
+|---|---|---|
+| 适合 | Gmail / 境外收件人 | QQ 邮箱收件人（送达率高） |
+| 配置耗时 | ~5 分钟 | ~2 分钟 |
+| 凭证类型 | API key（token） | 授权码（token） |
+| 需要注册 | 是（免费额度） | 否（用现有邮箱） |
 
-#### Telegram机器人通知
+**SendGrid 配置：**
 
-如果你想通过Telegram Bot发送通知，需要设置如下环境变量。
+1. 在 [sendgrid.com](https://sendgrid.com) 注册（免费额度，100 封/天）。
+2. 进入 **Settings → Sender Authentication → Verify a Single Sender**，验证你的发件邮箱。
+3. 进入 **Settings → API Keys → Create API Key**，选择 "Restricted Access" 并仅开启 **Mail Send**。复制 key（以 `SG.` 开头）。
 
-Telegram Bot [创建教程](https://www.cytron.io/tutorial/how-to-create-a-telegram-bot-get-the-api-key-and-chat-id)
+**QQ 邮箱 SMTP 配置：**
 
-- TG_BOT_TOKEN: Bot 密钥
+1. 登录 QQ 邮箱。进入 **设置 → 账户 → POP3/SMTP 服务**，开启 SMTP。
+2. 生成**授权码**——这是一个独立 token，不是你 QQ 密码。复制下来。
 
-- TG_CHAT_ID: 聊天 ID，获取方法见教程
+### 第 3 步：配置 GitHub Secrets
 
-### 在 Github Actions 的使用方法
+进入你 fork 的仓库：**Settings → Secrets and variables → Actions → New repository secret**。
 
+**必填**（查询 CEAC 用）：
 
-1. folk这个仓库
+| Secret | 说明 | 示例 |
+|---|---|---|
+| `LOCATION` | 使领馆地点 | `CHINA, BEIJING` |
+| `NUMBER` | Application ID 或 Case Number | `AA0020AKAX` |
+| `PASSPORT_NUMBER` | 护照号码 | `E12345678` |
+| `SURNAME` | 姓的前 5 个英文字母 | `SMITH` |
 
+**至少选一组**邮件配置：
 
-2. 在`Github -> Settings -> Secrets and variables -> Actions -> New repository secret`中设置环境变量。
-![image](docs/github.new.secret.png)
+| Secret | 方式 | 说明 |
+|---|---|---|
+| `FROM` | SendGrid | 已验证的发件邮箱 |
+| `TO` | SendGrid | 收件人，`\|` 分隔 |
+| `SENDGRID_API_KEY` | SendGrid | 第 2 步创建的 API key |
+| `SMTP_FROM` | SMTP | 发件邮箱 |
+| `SMTP_TO` | SMTP | 收件人，`\|` 分隔 |
+| `SMTP_PASSWORD` | SMTP | 第 2 步生成的授权码 |
+| `SMTP_SERVER` | SMTP | 可选；不填则从邮箱域名自动推断 |
 
+**可选**：
 
-3. 查看 `Github Actions` 中的 `workflows` 是否正常运行并检查邮箱是否收到邮件。
+| Secret | 说明 | 示例 |
+|---|---|---|
+| `TIMEZONE` | IANA 时区格式，用于活跃时段判断 | `Asia/Shanghai` |
+| `ACTIVE_HOURS` | Refused 状态的通知时间窗口 | `08:00-22:00` |
 
-### 本地使用
+有效的地点代码见 [LOCATION.md](LOCATION.md)。**注意**：请先在 CEAC 网站手动确认能查到你的签证状态。
 
-对于本地使用，可以在项目根目录创建一个 `.env` 文件来存储你的环境变量 (例如 `LOCATION=...`, `NUMBER=...`)，脚本会自动加载它们。或者拷贝模版文件 `.env.example` 并重命名为 `.env`来使用。
-然后使用 uv 构建环境：
+### 第 4 步：启用 Actions
+
+进入你 fork 仓库的 **Actions** 标签页，启用 workflows（fork 仓库默认禁用）。
+
+### 第 5 步：手动测试
+
+进入 **Actions → run main.py → Run workflow** → **Run workflow**。
+
+首次运行从 `UNKNOWN` → `<你的实际状态>`，所以一定会收到通知。之后只有状态真正变化时才会再收到邮件。
+
+---
+
+## 本地使用
 
 ```bash
-pip install uv # 如果你没有安装 uv
+git clone https://github.com/YOUR_USERNAME/CEACStatusBot.git
+cd CEACStatusBot
+cp .env.example .env
+# 编辑 .env 填入你的真实信息
 uv sync
 uv run trigger.py
 ```
 
+想定时运行，加 cron：
 
-## 待办事项
+```bash
+17 * * * * cd /path/to/CEACStatusBot && /path/to/uv run trigger.py
+```
 
-- [x] 向多个邮箱发送邮件。
+---
 
-- [x] 增加更多第三方通知服务。
+## 状态记录
 
-- [ ] 更人性化的界面。
+`status_record.json` 存储在仓库中，**不含任何个人信息**，只有状态名称和 ISO-8601 时间戳。
 
+```json
+{
+  "current": "Issued",
+  "history": [
+    {"from": "UNKNOWN", "to": "Application Received", "at": "2024-05-15T08:00:00"},
+    {"from": "Application Received", "to": "Administrative Processing", "at": "2024-05-28T14:30:00"},
+    {"from": "Administrative Processing", "to": "Issued", "at": "2024-06-15T10:00:00"}
+  ]
+}
+```
 
-## 特别感谢
+### 通知规则
 
-### 开发者
+| 触发条件 | 行为 |
+|---|---|
+| 状态变化 | 记录转移，发送邮件 |
+| 状态不变 | 静默 |
+| 状态变为 `Refused (AP)` 或 `Refused (Final)`，在活跃时间内 | 发送邮件 |
+| 状态变为 `Refused (AP)` 或 `Refused (Final)`，不在活跃时间内 | 记录转移，不发送 |
+| `case_last_updated` 变了但状态没变 | 静默 |
 
-[h4x3rotab](https://github.com/h4x3rotab) : Telegram bot, 适配新版CEAC接口
+### 短 Refused 与长 Refused
 
-### 相关项目
+CEAC 用一个 `Refused` 表示两种完全不同的情况。Bot 自动区分：
 
-这个repo中的部分代码引用了下面的项目。谢谢你们的工作。
+| | 长 Refused | 短 Refused |
+|---|---|---|
+| **CEAC 显示** | "Refused" + 一长段文字 | "Refused" + 2-3 行短文字 |
+| **含义** | 221(g) 行政审查，案子还在处理 | 最终拒签（如 §214(b)） |
+| **记录为** | `Refused (AP)` | `Refused (Final)` |
+| **后续** | 通常数周/数月后变为 `Issued` | 不会自己变，需重新申请 |
 
-- [ceac_tracker](https://github.com/lixin-wei/ceac_tracker)
+两者在状态机中被视为不同状态。无论你的案子走哪条路径，Bot 都只会通知一次然后保持静默，直到状态再次变化。
 
-- [CEACStatTracker](https://github.com/yuzeming/CEACStatTracker)
+---
+
+## 常见问题
+
+### "Query status failed"
+
+抓取 CEAC 失败（重试 5 次后放弃）。可能原因：
+- CEAC 网站暂时不可用（稍后重试）。
+- `LOCATION` 值与 CEAC 下拉菜单不匹配。检查 [LOCATION.md](LOCATION.md)。
+
+### 运行成功但没收到邮件
+
+- 先检查垃圾邮件/垃圾箱。
+- **SendGrid**：去 SendGrid 后台 → **Activity → Search**。查看邮件状态："Delivered"（已送达）、"Bounced"（退信）或 "Dropped"（丢弃），附原因。确认发件邮箱已验证。
+- **SMTP / QQ**：确认 SMTP 服务已开启且授权码正确。QQ 邮箱的 SMTP 在改密码后有时会被静默关闭。
+- QQ 邮箱收件：境外 IP 发的邮件（SendGrid）偶尔进垃圾箱，标记一次「这不是垃圾邮件」即可训练过滤规则。QQ 自己发出的 SMTP 邮件通常不会。
+
+### "No notification handles configured"
+
+SendGrid 和 SMTP 都没配，或配置不完整。至少需要完整配置一组。
+
+### Workflow 不运行
+
+- Fork 仓库的 Actions 默认禁用。进入 **Actions** 标签页启用。
+- 定时任务仅在**默认分支**（`main`）上触发。在其他分支上使用 `workflow_dispatch` 手动触发。
+
+### git push 失败
+
+Workflow 需要 `contents: write` 权限（已在配置中）。如果你在 `main` 分支上设置了需要 PR review 的分支保护规则，请在规则中放行 `github-actions[bot]`，或移除分支保护。
+
+### 我的仓库是 public 的，安全吗？
+
+安全。你的护照号、申请号、姓氏**仅存储在 GitHub Secrets**（静态加密）中，运行时注入环境变量，从未写入任何文件。`status_record.json` 中只有签证状态名称和时间戳，不含任何个人信息。
+
+---
+
+## 致谢
+
+- [h4x3rotab](https://github.com/h4x3rotab): Telegram bot，CEAC 接口适配
+- [Andision](https://github.com/Andision): 原始项目
+- [ceac_tracker](https://github.com/lixin-wei/ceac_tracker) · [CEACStatTracker](https://github.com/yuzeming/CEACStatTracker)

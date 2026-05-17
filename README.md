@@ -1,87 +1,235 @@
-# CEACStatusBot🤖
+# CEACStatusBot
 
-[查看中文文档](README.Chinese.md)
+[中文文档](README.Chinese.md)
 
-Automatically check your U.S. visa application status in [CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV) and notify you instantly when it updates! 
+Automatically check your U.S. visa application status on [CEAC](https://ceac.state.gov/CEACStatTracker/Status.aspx?App=NIV) and notify you **only when the status changes**. No spam, no personal data in notifications, no password stored in plain sight.
 
-## Usage
+---
 
-You can deploy it to your own machine, but it is highly recommended to use Github Actions. 
+## How It Works
 
-### Environment Variables
+```
+┌──────────────────────────────────────────────────────────┐
+│                    GitHub Actions                         │
+│                    (runs hourly)                          │
+│                                                          │
+│  1. Scrape CEAC → solve CAPTCHA with ONNX model          │
+│                        │                                 │
+│  2. Compare status vs. previous (status_record.json)     │
+│           │                          │                   │
+│      Changed                     Unchanged               │
+│           │                          │                   │
+│  3. Record transition           Do nothing               │
+│     ↓                                                    │
+│  4. Send email ──┬── SendGrid (REST API)                 │
+│                  └── SMTP     (QQ / Gmail / ...)         │
+│     ↓                                                    │
+│  5. git commit & push status_record.json                 │
+└──────────────────────────────────────────────────────────┘
+```
 
-- LOCATION: the location where you applied for your visa. To find the corresponding location name for the embassy, please refer to [this table](LOCATION.md). Use the embassy location name directly, such as `CHINA, BEIJING`.
+1. **Query** — The bot requests the CEAC status page, downloads a CAPTCHA, and solves it with an ONNX deep-learning model. It submits your application details (injected from GitHub Secrets at runtime, never written to disk) and parses the result.
 
-- NUMBER: your Application ID or Case Number help icon (e.g., AA0020AKAX or 2012118 345 0001) 
+2. **State machine** — The status is compared against the last known state in `status_record.json`. If identical, the run exits silently: no email, no git commit.
 
-- PASSPORT_NUMBER: your passport number
+3. **Classify Refused** — Since March 2020, CEAC uses `Refused` for both final denials and temporary 221(g) administrative-processing holds. The bot inspects the description text to split them into `Refused (AP)` and `Refused (Final)` — two distinct states.
 
-- SURNAME: first 5 Letters of surname
+4. **Notify** — If the status changed, an email is sent through whichever provider(s) you configured. The email contains the old→new transition, a full timeline of every past transition, and the CEAC description. **No passport number, application ID, or surname is included.**
 
-- TIMEZONE: optional, set your timezone to avoid disturbing during sleep. :-) Some example: `Asia/Shanghai` `America/New_York`
+5. **Persist** — The updated `status_record.json` is committed back to the repo so the next run has the correct baseline. The file contains only status names and timestamps — zero PII.
 
-- ACTIVE_HOURS: optional, set the active hours to avoid disturbing during sleep. :-) Use 24 hour format. Some example: 08:00-12:00
+### Example email
 
+```
+Subject: [CEACStatusBot] Application Received -> Administrative Processing
 
-- GH_TOKEN: to access previous status, you need to set a Github token with `repo` scope. You can create a new token in Github -> Settings -> Developer settings -> Personal access tokens.
+Visa status has changed.
 
-#### Notification by Email
+Previous status: Application Received
+Current status:  Administrative Processing
+Last updated:    28-May-2024
+Case created:    15-May-2024
 
-Add the following env variables if you want to send notification by email.
+--- Status Timeline ---
+  UNKNOWN -> Application Received  (2024-05-15T08:00:00)
+  Application Received -> Administrative Processing  (2024-05-28T14:30:00)
 
-- FROM: the email address you use to send the notification.
+--- Details ---
+Visa type:    NONIMMIGRANT VISA APPLICATION
+Description:  Your visa case is currently undergoing necessary administrative processing...
+```
 
-- TO: the email address you want the notification sent to. You can send to more than one email, split the email address with "|" and without space. Here is an example: `first@email.com|second@email.com|third@email.com`
+---
 
-- PASSWORD: the password of the `FROM` email. Notice: for some email, such as QQ Mail, you should use "authorization code" instead of your password here, because this repo use SMTP to send email. Check the SMTP usage of your Mailbox Service Provider for more details.
+## Quick Start (GitHub Actions)
 
-- SMTP: (optional) specify the smtp server to send the email (e.g. `smtp.example.com`, `smtp.example.com:587`)
+### 1. Fork this repo
 
-#### Notification by Telegram bot
+Fork [github.com/machsix/CEACStatusBot](https://github.com/machsix/CEACStatusBot).
 
-Add the following env variables if you want to send notification by a Telegram bot.
+### 2. Pick an email provider
 
-Create a Telegram bot and get the info below according to [this tutorial](https://gist.github.com/nafiesl/4ad622f344cd1dc3bb1ecbe468ff9f8a).
+You need at least one. You can enable both at the same time — they are independent.
 
-- TG_BOT_TOKEN: the bot token
+| | SendGrid | SMTP (QQ Mail) |
+|---|---|---|
+| Best for | Gmail / international recipients | QQ Mail recipients (higher deliverability) |
+| Setup time | ~5 min | ~2 min |
+| Credential type | API key (token) | Authorization code (token) |
+| Requires account | Yes (free tier) | No (your existing mailbox) |
 
-- TG_CHAT_ID: the chat id you want to receive the notification
+**SendGrid setup:**
 
-### Github Actions
+1. Sign up at [sendgrid.com](https://sendgrid.com) (free tier, 100 emails/day).
+2. Go to **Settings → Sender Authentication → Verify a Single Sender** and verify your email.
+3. Go to **Settings → API Keys → Create API Key**, choose "Restricted Access" with **Mail Send** only. Copy the key (starts with `SG.`).
 
-1. folk this repo
+**QQ Mail SMTP setup:**
 
-2. set your Environment Variables in `Github -> Settings -> Secrets and variables -> Actions -> New repository secret`
-![image](docs/github.new.secret.png)
+1. Log in to QQ Mail. Go to **Settings → Account → POP3/SMTP Service** and turn on SMTP.
+2. Generate an **authorization code** — this is a dedicated token, not your QQ password. Copy it.
 
-3. check your workflow in Actions and your Mailbox / Telegram
+### 3. Set up GitHub Secrets
 
-### Local Usage
-You can also run this bot locally. 
-For local development, create a `.env` file in the project root to store your environment variables (e.g., `LOCATION=...`, `NUMBER=...`). The script will automatically load them. Or copy the `.env.example` file and rename it to `.env` and fill in the values.
-Then, use uv to build the environment:
+Go to your fork: **Settings → Secrets and variables → Actions → New repository secret**.
+
+**Required** (for querying CEAC):
+
+| Secret | Description | Example |
+|---|---|---|
+| `LOCATION` | Embassy / consulate | `CHINA, BEIJING` |
+| `NUMBER` | Application ID or Case Number | `AA0020AKAX` |
+| `PASSPORT_NUMBER` | Passport number | `E12345678` |
+| `SURNAME` | First 5 letters of surname | `SMITH` |
+
+**At least one** of these email groups:
+
+| Secret | For | Description |
+|---|---|---|
+| `FROM` | SendGrid | Verified sender email |
+| `TO` | SendGrid | Recipient(s), `\|`-separated |
+| `SENDGRID_API_KEY` | SendGrid | API key from step 2 |
+| `SMTP_FROM` | SMTP | Sender email address |
+| `SMTP_TO` | SMTP | Recipient(s), `\|`-separated |
+| `SMTP_PASSWORD` | SMTP | Authorization code from step 2 |
+| `SMTP_SERVER` | SMTP | Optional; auto-detected from domain |
+
+**Optional:**
+
+| Secret | Description | Example |
+|---|---|---|
+| `TIMEZONE` | Timezone (IANA) for active-hours | `Asia/Shanghai` |
+| `ACTIVE_HOURS` | Notification window for Refused status | `08:00-22:00` |
+
+Valid location codes: [LOCATION.md](LOCATION.md).
+
+### 4. Enable Actions
+
+Go to the **Actions** tab in your fork and enable workflows (disabled by default on forks).
+
+### 5. Test it
+
+Go to **Actions → run main.py → Run workflow** → **Run workflow**.
+
+The first run transitions from `UNKNOWN` → `<your real status>`, so you'll get a notification. After that, only actual status changes will trigger email.
+
+---
+
+## Local Usage
 
 ```bash
-pip install uv # if you don't have uv installed
+git clone https://github.com/YOUR_USERNAME/CEACStatusBot.git
+cd CEACStatusBot
+cp .env.example .env
+# edit .env with your real values
 uv sync
 uv run trigger.py
 ```
 
-## TODO
+For periodic checking, add a cron job:
 
-- [x] Send Email to multiple emails.
-- [x] Add more third-party notification services.
-- [ ] More human-friendly interface.
+```bash
+17 * * * * cd /path/to/CEACStatusBot && /path/to/uv run trigger.py
+```
 
-## Special Thanks
+---
 
-### Contributor
+## Status Record
 
-[h4x3rotab](https://github.com/h4x3rotab) : Telegram bot, Adaption to new CEAC interface
+`status_record.json` is committed to the repo and contains **zero PII** — only status names and ISO-8601 timestamps.
 
-### Related Project
+```json
+{
+  "current": "Issued",
+  "history": [
+    {"from": "UNKNOWN", "to": "Application Received", "at": "2024-05-15T08:00:00"},
+    {"from": "Application Received", "to": "Administrative Processing", "at": "2024-05-28T14:30:00"},
+    {"from": "Administrative Processing", "to": "Issued", "at": "2024-06-15T10:00:00"}
+  ]
+}
+```
 
-Part of the code in this repo refers to the following project. Thank you for your pretty work.
+### Notification rules
 
-- [ceac_tracker](https://github.com/lixin-wei/ceac_tracker)
-- [CEACStatTracker](https://github.com/yuzeming/CEACStatTracker)
+| Trigger | Action |
+|---|---|
+| Status changed | Record transition, send email |
+| Status unchanged | Silent |
+| Status → `Refused (AP)` or `Refused (Final)`, within active hours | Send email |
+| Status → `Refused (AP)` or `Refused (Final)`, outside active hours | Record transition, suppress email |
+| `case_last_updated` changed, status same | Silent |
+
+### Short Refused vs. Long Refused
+
+CEAC uses `Refused` for two very different outcomes. The bot tells them apart:
+
+| | Long Refused | Short Refused |
+|---|---|---|
+| **CEAC display** | "Refused" + a long paragraph | "Refused" + 2–3 short lines |
+| **Meaning** | 221(g) administrative processing; case is still alive | Final refusal (e.g. §214(b)) |
+| **Recorded as** | `Refused (AP)` | `Refused (Final)` |
+| **What to expect** | Usually resolves to `Issued` after weeks/months | Will not change; re-application needed |
+
+These are tracked as two separate states. Whichever path your case is on, the bot notifies you once and then stays quiet.
+
+---
+
+## Troubleshooting
+
+### "Query status failed"
+
+CEAC could not be scraped after 5 retries. Possible causes:
+- CEAC is temporarily down — try again later.
+- Your `LOCATION` doesn't match the CEAC dropdown. Double-check against [LOCATION.md](LOCATION.md).
+
+### No email received
+
+- Check spam/trash first.
+- **SendGrid**: Go to the SendGrid dashboard → **Activity → Search**. Look for "Delivered", "Bounced", or "Dropped" + a reason. Make sure your sender email is verified.
+- **SMTP / QQ**: Check that SMTP is actually enabled and the authorization code is correct. QQ Mail's SMTP sometimes gets silently turned off after password changes.
+- QQ Mail recipients: emails from overseas IPs (SendGrid) may land in spam. Mark them as "not spam" once to train the filter. SMTP from QQ itself usually avoids this.
+
+### "No notification handles configured"
+
+You didn't set up either SendGrid or SMTP secrets (or both are incomplete). At least one full set is required.
+
+### Workflow not running
+
+- Forks disable Actions by default. Go to the **Actions** tab and enable them.
+- The cron schedule only fires on the **default branch** (`main`). Use `workflow_dispatch` on other branches.
+
+### git push fails
+
+The workflow needs `contents: write` (already configured). If you have branch protection requiring PR reviews on `main`, exempt `github-actions[bot]` or remove the protection.
+
+### Is my data safe in a public repo?
+
+Yes. Your passport number, application ID, and surname live **only** in GitHub Secrets (encrypted at rest). They are injected as environment variables at runtime and never written to any file. `status_record.json` contains only status strings and dates.
+
+---
+
+## Credits
+
+- [h4x3rotab](https://github.com/h4x3rotab): Telegram bot, CEAC interface adaptation
+- [Andision](https://github.com/Andision): Original project
+- [ceac_tracker](https://github.com/lixin-wei/ceac_tracker) · [CEACStatTracker](https://github.com/yuzeming/CEACStatTracker)
