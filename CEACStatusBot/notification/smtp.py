@@ -38,4 +38,5 @@ class SmtpNotificationHandle(NotificationHandle):
         smtp.login(self.__fromEmail, self.__password)
         smtp.sendmail(self.__fromEmail, self.__toEmail, msg.as_string())
         smtp.quit()
-        print(f"SMTP: email sent to {self.__toEmail}")
+        domains = [f"***@{a.split('@')[1]}" for a in self.__toEmail]
+        print(f"SMTP: email sent to {len(self.__toEmail)} recipient(s) ({', '.join(domains)})")

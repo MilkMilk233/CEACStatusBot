@@ -33,6 +33,6 @@ class SendgridNotificationHandle(NotificationHandle):
                 },
             )
             if resp.status_code in (200, 201, 202):
-                print(f"SendGrid: email sent to {recipient}")
+                print(f"SendGrid: email sent to ***@{recipient.split('@')[1]}")
             else:
-                print(f"SendGrid: failed to send to {recipient}: {resp.status_code} {resp.text}")
+                print(f"SendGrid: failed to send to ***@{recipient.split('@')[1]}: HTTP {resp.status_code}")
